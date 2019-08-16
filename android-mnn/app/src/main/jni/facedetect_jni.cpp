@@ -141,11 +141,11 @@ Java_cn_sample_mnn_detect_Facetest_FaceDetect(JNIEnv *env, jobject instance, jby
     if(imageChannel==3) {
 
         cv::Mat temp_mat(imageHeight, imageWidth, CV_8UC3, faceImageCharDate);
-        cvtColor(temp_mat, srcmatimg, CV_RGB2BGR);
+        //cvtColor(temp_mat, srcmatimg, CV_RGB2RGB);
     }else{
 
         cv::Mat temp_mat(imageHeight, imageWidth, CV_8UC4, faceImageCharDate);
-        cvtColor(temp_mat, srcmatimg, CV_RGBA2BGR);
+        cvtColor(temp_mat, srcmatimg, CV_RGBA2RGB);
     }
 
 

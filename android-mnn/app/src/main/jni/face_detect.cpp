@@ -5,26 +5,60 @@
 #include <MNNDefine.h>
 #include <Tensor.hpp>
 #include <ImageProcess.hpp>
-#include <Backend.hpp>
-#include "Interpreter.hpp"
-#include "MNNDefine.h"
-#include "Tensor.hpp"
-#include <revertMNNModel.hpp>
+
 
 
 using namespace MNN;
 using namespace MNN::CV;
 
+std::shared_ptr<MNN::Interpreter> PNet_ = NULL;
+std::shared_ptr<MNN::Interpreter> RNet_ = NULL;
+std::shared_ptr<MNN::Interpreter> ONet_ = NULL;
 
-#define TAG "aaa"
-#define LOGD(...) __android_log_print(ANDROID_LOG_INFO,TAG,__VA_ARGS__)
+MNN::Session * sess_p = NULL;
+MNN::Session * sess_r = NULL;
+MNN::Session * sess_o = NULL;
+
+MNN::Tensor * p_input = nullptr;
+MNN::Tensor * p_out_pro = nullptr;
+MNN::Tensor * p_out_reg = nullptr;
+
+MNN::Tensor * r_input = nullptr;
+MNN::Tensor * r_out_pro = nullptr;
+MNN::Tensor * r_out_reg = nullptr;
+
+MNN::Tensor * o_input = nullptr;
+MNN::Tensor * o_out_pro = nullptr;
+MNN::Tensor * o_out_reg = nullptr;
+MNN::Tensor * o_out_lank = nullptr;
+
+std::shared_ptr<ImageProcess> pretreat_data;
+
+std::vector<FaceInfo> candidate_boxes_;
+std::vector<FaceInfo> total_boxes_;
+
+static float threhold_p = 0.8f;
+static float threhold_r = 0.8f;
+static float threhold_o = 0.9f;
+static float iou_threhold = 0.7f;
+static float factor = 0.709f;
+//static int min_face = 48;
+
+//pnet config
+static const float pnet_stride = 2;
+static const float pnet_cell_size = 12;
+static const int pnet_max_detect_num = 5000;
+//mean & std
+static const float mean_val = 127.5f;
+static const float std_val = 0.0078125f;
+
 
 static bool CompareBBox(const FaceInfo & a, const FaceInfo & b) {
 	return a.bbox.score > b.bbox.score;
 }
 
 
- float IoU(float xmin, float ymin, float xmax, float ymax,
+static float IoU(float xmin, float ymin, float xmax, float ymax,
 	float xmin_, float ymin_, float xmax_, float ymax_, bool is_iom) {
 	float iw = std::min(xmax, xmax_) - std::max(xmin, xmin_) + 1;
 	float ih = std::min(ymax, ymax_) - std::max(ymin, ymin_) + 1;
@@ -41,7 +75,7 @@ static bool CompareBBox(const FaceInfo & a, const FaceInfo & b) {
 	}
 }
 
- std::vector<FaceInfo> NMS(std::vector<FaceInfo>& bboxes,
+ static std::vector<FaceInfo> NMS(std::vector<FaceInfo>& bboxes,
 	float thresh, char methodType) {
 	std::vector<FaceInfo> bboxes_nms;
 	if (bboxes.size() == 0) {
@@ -148,7 +182,7 @@ static bool CompareBBox(const FaceInfo & a, const FaceInfo & b) {
 		bbox.ymax = round(std::min(bbox.ymin + side - 1, height - 1.f));
 	}
 }
- void FaceDetect::GenerateBBox(float * confidence_data, float *reg_box, int feature_map_w_, int feature_map_h_, float scale, float thresh) {
+ static void GenerateBBox(float * confidence_data, float *reg_box, int feature_map_w_, int feature_map_h_, float scale, float thresh) {
 
 	int spatical_size = feature_map_w_*feature_map_h_;
 
@@ -184,28 +218,15 @@ FaceDetect::FaceDetect(const string& proto_model_dir, float threhold_p_, float t
 	threhold_o = threhold_o_;
 	factor = factor_;
     threads_num = 4;
-	LOGD("model==================%s", (proto_model_dir + "det1.mnn").c_str());
-
 	PNet_ = std::shared_ptr<MNN::Interpreter>(MNN::Interpreter::createFromFile((proto_model_dir + "det1.mnn").c_str()));
 
 	RNet_ = std::shared_ptr<MNN::Interpreter>(MNN::Interpreter::createFromFile((proto_model_dir + "det2.mnn").c_str()));
 
 	ONet_ = std::shared_ptr<MNN::Interpreter>(MNN::Interpreter::createFromFile((proto_model_dir + "det3-half.mnn").c_str()));
-/**
-	auto revertor = std::unique_ptr<Revert>(new Revert((proto_model_dir + "det1.mnn").c_str()));
-	LOGD("after revertor\n");
-	revertor->initialize();
-	auto modelBuffer      = revertor->getBuffer();
-    LOGD("after revertor1\n");
-	const auto bufferSize = revertor->getBufferSize();
-	LOGD("buffersize = %d", bufferSize);
-	PNet_ = std::shared_ptr<MNN::Interpreter>(MNN::Interpreter::createFromBuffer(modelBuffer, bufferSize));
-	revertor.reset();
-    */
 
 
     MNN::ScheduleConfig config;
-    config.type = (MNNForwardType)0;
+    config.type = (MNNForwardType)3;
     config.numThread = 4; // 1 faster
 
     BackendConfig backendConfig;
@@ -242,7 +263,6 @@ FaceDetect::FaceDetect(const string& proto_model_dir, float threhold_p_, float t
 
     pretreat_data = std::shared_ptr<ImageProcess>(ImageProcess::create(config_data));
 
-
 }
 
 FaceDetect::~FaceDetect() {
@@ -260,7 +280,7 @@ uint8_t* get_img(cv::Mat img){
     return (uint8_t *)MatTemp.data;
 }
 
-vector<FaceInfo> FaceDetect::ProposalNet(const cv::Mat& img, int minSize, float threshold, float factor) {
+static vector<FaceInfo> ProposalNet(const cv::Mat& img, int minSize, float threshold, float factor) {
 	int width = img.cols;
 	int height = img.rows;
 	float scale = 12.0f / minSize;
@@ -312,7 +332,7 @@ vector<FaceInfo> FaceDetect::ProposalNet(const cv::Mat& img, int minSize, float 
 	return res_boxes;
 }
 
-std::vector<FaceInfo> FaceDetect::NextStage(const cv::Mat& image, vector<FaceInfo> &pre_stage_res, int input_w, int input_h, int stage_num, const float threshold) {
+static std::vector<FaceInfo> NextStage(const cv::Mat& image, vector<FaceInfo> &pre_stage_res, int input_w, int input_h, int stage_num, const float threshold) {
     vector<FaceInfo> res;
 	int batch_size = pre_stage_res.size();
 
@@ -411,7 +431,7 @@ std::vector<FaceInfo> FaceDetect::NextStage(const cv::Mat& image, vector<FaceInf
 	return res;
 }
 
-vector<FaceInfo> FaceDetect::Detect(const cv::Mat& image,  const int min_face,  const int stage) {
+vector<FaceInfo> FaceDetect::Detect(cv::Mat& image,  const int min_face,  const int stage) {
 
 	vector<FaceInfo> pnet_res;
 	vector<FaceInfo> rnet_res;
@@ -444,11 +464,25 @@ vector<FaceInfo> FaceDetect::Detect(const cv::Mat& image,  const int min_face,  
 		return rnet_res;
 	}
 	else if (stage == 3) {
+	
+		int num_box = onet_res.size();
+    	std::vector<cv::Rect> bbox;
+		bbox.resize(num_box);
+		for (int i = 0; i < num_box; i++) {
+			bbox[i] = cv::Rect(onet_res[i].bbox.xmin, onet_res[i].bbox.ymin, onet_res[i].bbox.xmax - onet_res[i].bbox.xmin + 1, onet_res[i].bbox.ymax - onet_res[i].bbox.ymin + 1);
+			for (int j = 0; j<5; j = j + 1)	
+			{
+				cv::circle(image, cvPoint(onet_res[i].landmark[j], onet_res[i].landmark[j + 1]), 2, CV_RGB(0, 255, 0), CV_FILLED);
+			}
+		}
+		for (vector<cv::Rect>::iterator it = bbox.begin(); it != bbox.end(); it++) {
+			cv::rectangle(image, (*it), cv::Scalar(0, 0, 255), 2, 8, 0);
+		}
+		
+	    //cv::imwrite("result.jpg", image);
+		
 
-
-
-
-
+		
 		return onet_res;
 	}
 	else {

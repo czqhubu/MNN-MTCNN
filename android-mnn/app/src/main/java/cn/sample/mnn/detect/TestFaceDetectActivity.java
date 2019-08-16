@@ -106,7 +106,7 @@ public class TestFaceDetectActivity extends Activity {
         }
         if(m_detect == null)
             Log.i(TAG, "m_detect is null");
-        boolean initRet = m_detect.FaceDetectionModelInit("/storage/emulated/legacy/facedetect/",80);
+        boolean initRet = m_detect.FaceDetectionModelInit("/storage/emulated/legacy/facedetect/",40);
 
 
         //copyAssets();
